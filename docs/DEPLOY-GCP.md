@@ -1,29 +1,30 @@
 # Hosting watchlist-monitor on Google Cloud Platform
 
-This guide deploys the **web UI** to **Cloud Run** (serverless), with **Cloud SQL
-for PostgreSQL** as the persistent database and **Cloud Scheduler** driving the
-daily email job. Once deployed you get a public HTTPS URL you can open from
-anywhere.
+This guide deploys the **web UI** to **Cloud Run** (serverless) and uses a
+**free managed PostgreSQL** database (**Neon**) for persistence, with **Cloud
+Scheduler** driving the daily email job. Once deployed you get a public HTTPS URL
+you can open from anywhere — for **$0/month** on the free tiers.
 
-> **Why Postgres, not SQLite?** Cloud Run instances have an *ephemeral*
+> **Why a managed Postgres, not SQLite?** Cloud Run instances have an *ephemeral*
 > filesystem and scale to zero — a SQLite file would be wiped on every restart.
 > The code auto-switches to Postgres when the `DATABASE_URL` env var is present
-> (see `monitor/store.py`); locally it still uses SQLite with no changes.
+> (see `monitor/store.py`); locally it still uses SQLite with no changes. Any
+> Postgres provider works — no code change to switch.
 
 ---
 
 ## What you'll create
 
-| Component | Purpose | Rough cost |
+| Component | Purpose | Cost |
 |---|---|---|
-| Cloud Run service | Runs the FastAPI app | Pay-per-request; ~$0–5/mo at personal volume |
-| Cloud SQL (Postgres) | Persistent DB | ~$8–10/mo (smallest `db-f1-micro`) |
-| Cloud Scheduler job | Triggers the daily report | Free (≤3 jobs) |
-| Secret Manager | Holds DB URL, SMTP, tokens | Negligible |
-| Artifact Registry | Stores the built image | Negligible |
+| **Neon** Postgres | Persistent DB | **Free** (0.5 GB, scales to zero) |
+| Cloud Run service | Runs the FastAPI app | **Free** tier: 2M requests/mo |
+| Cloud Scheduler job | Triggers the daily report | **Free** (≤3 jobs) |
+| Secret Manager | Holds DB URL, SMTP, tokens | Negligible / free |
 
-There is **no permanently-free Postgres** on GCP — budget ~$10/month. To avoid
-that cost entirely, keep using the GitHub Actions cron + local UI combo instead.
+**Total: effectively $0/month** at personal volume. Neon is the recommended free
+Postgres; **Supabase**, **Railway**, or **Aiven** work identically — just paste
+their connection string as `DATABASE_URL`.
 
 ---
 
@@ -41,7 +42,6 @@ gcloud config set project $PROJECT_ID
 # Enable the APIs we need
 gcloud services enable \
   run.googleapis.com \
-  sqladmin.googleapis.com \
   cloudscheduler.googleapis.com \
   secretmanager.googleapis.com \
   artifactregistry.googleapis.com \
@@ -50,33 +50,27 @@ gcloud services enable \
 
 ---
 
-## Step 1 — Create the Cloud SQL (Postgres) instance
+## Step 1 — Create a free Postgres database (Neon)
 
-```bash
-# Instance (smallest tier; takes a few minutes)
-gcloud sql instances create watchlist-db \
-  --database-version=POSTGRES_15 \
-  --tier=db-f1-micro \
-  --region=$REGION
+No GCP resource here — Neon is a separate free service.
 
-# A database and a user
-gcloud sql databases create watchlist --instance=watchlist-db
-gcloud sql users create appuser \
-  --instance=watchlist-db \
-  --password='CHOOSE-A-STRONG-PASSWORD'
+1. Go to **https://neon.tech** and sign up (free, no card required).
+2. Click **Create project**. Pick a region near your Cloud Run region for low
+   latency (e.g. `AWS us-east` for `us-central1`, or `AWS ap-south` for India).
+3. After it's created, open **Connection Details** and copy the
+   **connection string**. It looks like:
 
-# Note the connection name — looks like:  your-project-id:us-central1:watchlist-db
-gcloud sql instances describe watchlist-db --format='value(connectionName)'
-```
+   ```
+   postgresql://appuser:PASSWORD@ep-cool-name-123456.us-east-2.aws.neon.tech/neondb?sslmode=require
+   ```
 
-Cloud Run connects to Cloud SQL over a Unix socket at
-`/cloudsql/<CONNECTION_NAME>`. The `DATABASE_URL` therefore uses the socket host:
+That whole string is your `DATABASE_URL`. psycopg2 uses it directly — the
+`sslmode=require` is important (Neon only accepts TLS) and is already in the URL
+Neon gives you, so just paste it as-is.
 
-```
-postgresql://appuser:CHOOSE-A-STRONG-PASSWORD@/watchlist?host=/cloudsql/PROJECT_ID:REGION:watchlist-db
-```
-
-psycopg2 understands that URL form directly — no code changes needed.
+> **Supabase / Railway / Aiven instead?** Same idea: create a free project, copy
+> its Postgres connection string, use it as `DATABASE_URL`. For Supabase use the
+> **"Connection string → URI"** (the `:5432` direct connection or the pooler).
 
 ---
 
@@ -86,9 +80,8 @@ Create one secret per value. `DATABASE_URL` and `JOB_TOKEN` are required; the SM
 and OpenAI ones are optional (omit them and email just prints to the logs).
 
 ```bash
-CONN=$(gcloud sql instances describe watchlist-db --format='value(connectionName)')
-
-printf 'postgresql://appuser:CHOOSE-A-STRONG-PASSWORD@/watchlist?host=/cloudsql/%s' "$CONN" \
+# Paste the Neon connection string from Step 1 (keep the quotes)
+printf '%s' 'postgresql://appuser:PASSWORD@ep-cool-name-123456.us-east-2.aws.neon.tech/neondb?sslmode=require' \
   | gcloud secrets create DATABASE_URL --data-file=-
 
 # A random shared secret that protects the daily-job endpoint
@@ -119,10 +112,12 @@ gcloud run deploy watchlist-monitor \
   --source . \
   --region $REGION \
   --allow-unauthenticated \
-  --add-cloudsql-instances "$CONN" \
   --set-secrets "DATABASE_URL=DATABASE_URL:latest,JOB_TOKEN=JOB_TOKEN:latest,SMTP_HOST=SMTP_HOST:latest,SMTP_PORT=SMTP_PORT:latest,SMTP_USER=SMTP_USER:latest,SMTP_PASS=SMTP_PASS:latest,MAIL_TO=MAIL_TO:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest" \
   --memory 512Mi
 ```
+
+Because the DB is an external host (Neon) reached over TLS, there's **no Cloud SQL
+connector to configure** — Cloud Run just opens an outbound connection.
 
 When it finishes it prints a **Service URL** like
 `https://watchlist-monitor-xxxxx-uc.a.run.app`. Open it — the UI loads, and on
@@ -182,12 +177,11 @@ gcloud scheduler jobs run watchlist-daily --location $REGION
 | `GCP_REGION` | e.g. `us-central1` |
 | `GCP_WIF_PROVIDER` | the Workload Identity provider resource name |
 | `GCP_DEPLOY_SA` | a deploy service-account email |
-| `CLOUD_SQL_CONNECTION_NAME` | output of the `connectionName` command |
 
 Setting up WIF is a one-time step — follow Google's guide
 ("google-github-actions/auth" → Workload Identity Federation). The deploy SA needs
-`roles/run.admin`, `roles/cloudsql.client`, `roles/iam.serviceAccountUser`, and
-`roles/secretmanager.secretAccessor`.
+`roles/run.admin`, `roles/iam.serviceAccountUser`, and
+`roles/secretmanager.secretAccessor`. (No `cloudsql.client` — the DB is external.)
 
 ---
 
@@ -211,8 +205,8 @@ Setting up WIF is a one-time step — follow Google's guide
 # Redeploy after code changes
 gcloud run deploy watchlist-monitor --source . --region $REGION
 
-# Tear everything down to stop billing
+# Tear everything down
 gcloud scheduler jobs delete watchlist-daily --location $REGION
 gcloud run services delete watchlist-monitor --region $REGION
-gcloud sql instances delete watchlist-db
+# Delete the Neon project from the Neon dashboard (Settings → Delete project)
 ```

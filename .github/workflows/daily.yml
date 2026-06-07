@@ -1,0 +1,35 @@
+name: Daily Watchlist Monitor
+
+on:
+  # Run Monday–Friday at 21:30 UTC (≈ 4:30 PM ET / 5:30 PM EDT)
+  schedule:
+    - cron: "30 21 * * 1-5"
+  # Allow manual runs from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run watchlist monitor
+        env:
+          SMTP_HOST:      ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:      ${{ secrets.SMTP_PORT }}
+          SMTP_USER:      ${{ secrets.SMTP_USER }}
+          SMTP_PASS:      ${{ secrets.SMTP_PASS }}
+          MAIL_TO:        ${{ secrets.MAIL_TO }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python -m monitor.run

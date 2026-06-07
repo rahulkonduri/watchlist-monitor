@@ -1,0 +1,41 @@
+# ── Watchlist Monitor ──────────────────────────────────────────────────────────
+# Edit this file to customise your watchlist. No code changes needed.
+# ──────────────────────────────────────────────────────────────────────────────
+
+tickers:
+  - AAPL
+  - MSFT
+  - GOOGL
+  - SPY
+  - QQQ
+
+# triggers:
+#   # Fire an alert if the absolute daily price change exceeds this percentage
+#   daily_move_pct: 3.0
+
+#   # RSI thresholds (Wilder's 14-period RSI)
+#   rsi_oversold:   30    # alert when RSI drops at or below this value
+#   rsi_overbought: 70    # alert when RSI rises at or above this value
+
+#   # Moving-average crossover (golden cross / death cross)
+#   ma_short: 50          # short SMA period in trading days
+#   ma_long:  200         # long  SMA period in trading days
+
+# Send a daily summary email even when no alerts fire.
+# Set to false to receive email only on alert days.
+always_send_summary: true
+
+# ── Optional: AI context notes (InvestorMate) ─────────────────────────────────
+# Requires ALL of:
+#   1. pip install investormate
+#   2. OPENAI_API_KEY env var set
+#   3. enabled: true below
+# Produces a short qualitative context note per ticker. NOT a prediction or a
+# buy/sell call — guardrails are appended to your question automatically.
+ai_analysis:
+  enabled: true
+  question: "What recent news themes or sector backdrop are most relevant to this stock right now?"
+
+triggers:
+  daily_move_pct: 0.1 # almost any move triggers this
+  rsi_oversold: 99 # RSI never goes this high

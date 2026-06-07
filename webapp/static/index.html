@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Watchlist Monitor</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>📈 Watchlist Monitor</h1>
+    <nav id="tabs">
+      <button data-tab="dashboard" class="active">Dashboard</button>
+      <button data-tab="ideas">💡 Daily Ideas</button>
+      <button data-tab="market">🌐 Market Scan</button>
+      <button data-tab="inspector">🔍 Ticker Inspector</button>
+      <button data-tab="portfolio">Portfolio</button>
+      <button data-tab="interests">Interests</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- DASHBOARD -->
+    <section id="dashboard" class="tab active">
+      <div class="toolbar">
+        <span id="dash-meta" class="meta"></span>
+        <button id="dash-refresh">↻ Refresh now</button>
+      </div>
+      <div id="dash-status" class="status"></div>
+      <table id="dash-table">
+        <thead>
+          <tr>
+            <th>Ticker</th><th>Price</th><th>Daily %</th><th>RSI</th>
+            <th>MA Cross</th><th>Alerts</th><th>Signal assessment</th><th>AI context</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- DAILY IDEAS (SCREENER) -->
+    <section id="ideas" class="tab">
+      <div class="notice">
+        <strong>Research candidates, not recommendations.</strong> These tickers are surfaced from
+        <em>your</em> watchlist, themes, and holdings by transparent technical rules (RSI, moving-average
+        crossovers, daily moves). They are starting points to investigate — <strong>not</strong> buy/sell
+        advice, predictions, or price targets. This tool never tells you what to trade.
+      </div>
+      <div class="toolbar">
+        <span id="ideas-meta" class="meta"></span>
+        <button id="ideas-refresh">↻ Refresh ideas</button>
+      </div>
+      <div id="ideas-status" class="status"></div>
+
+      <h3>⭐ Top candidates to look at today</h3>
+      <div id="ideas-top" class="ideas-cards"></div>
+
+      <h3>By signal</h3>
+      <div id="ideas-groups"></div>
+    </section>
+
+    <!-- MARKET SCAN -->
+    <section id="market" class="tab">
+      <div class="notice">
+        <strong>Market-wide screener — current conditions only.</strong> This scans the constituents of a
+        top US or India index and flags names meeting <em>today's</em> technical conditions (oversold/overbought
+        RSI, fresh moving-average crossovers, large daily moves). It does <strong>not</strong> predict which
+        stocks will "boom or fall," sets no price targets, and gives no buy/sell recommendations — these are
+        starting points to research yourself.
+      </div>
+      <div class="toolbar">
+        <label>Index
+          <select id="market-index"></select>
+        </label>
+        <button id="market-scan-btn">🔍 Scan index</button>
+        <span id="market-meta" class="meta"></span>
+      </div>
+      <div id="market-status" class="status"></div>
+
+      <h3>⭐ Most-flagged names</h3>
+      <div id="market-top" class="ideas-cards"></div>
+
+      <h3>By signal</h3>
+      <div id="market-groups"></div>
+    </section>
+
+    <!-- TICKER INSPECTOR -->
+    <section id="inspector" class="tab">
+      <div class="toolbar">
+        <form id="insp-form" class="row-form" style="margin:0">
+          <input id="insp-input" placeholder="e.g. AAPL or RELIANCE.NS" style="min-width:220px" />
+          <button type="submit">🔍 Inspect</button>
+          <button type="button" id="insp-refresh" style="display:none">↻ Refresh</button>
+        </form>
+        <span id="insp-meta" class="meta"></span>
+      </div>
+      <div id="insp-status" class="status"></div>
+      <div id="insp-body" style="display:none">
+        <!-- Summary cards -->
+        <div id="insp-cards" class="summary-cards"></div>
+        <!-- Assessment -->
+        <div id="insp-assessment" class="insp-section"></div>
+        <!-- SMA relationship -->
+        <div id="insp-sma-rel" class="insp-pill"></div>
+        <!-- Price + SMA chart -->
+        <h3>Price &amp; Moving Averages (last 90 sessions)</h3>
+        <div class="chart-wrap"><canvas id="insp-price-chart"></canvas></div>
+        <!-- RSI chart -->
+        <h3>RSI (14-period Wilder)</h3>
+        <div class="chart-wrap"><canvas id="insp-rsi-chart"></canvas></div>
+        <!-- Alerts -->
+        <h3>Fired alerts</h3>
+        <div id="insp-alerts"></div>
+        <!-- AI note -->
+        <div id="insp-ai"></div>
+      </div>
+    </section>
+
+    <!-- PORTFOLIO -->
+    <section id="portfolio" class="tab">
+      <div id="pf-summary" class="summary-cards"></div>
+      <form id="pf-form" class="row-form">
+        <input name="ticker" placeholder="Ticker (e.g. AAPL)" required />
+        <input name="shares" type="number" step="any" placeholder="Shares" required />
+        <input name="cost_basis" type="number" step="any" placeholder="Cost / share" required />
+        <input name="purchased_on" type="date" />
+        <button type="submit">Add holding</button>
+      </form>
+      <div id="pf-status" class="status"></div>
+      <table id="pf-table">
+        <thead>
+          <tr>
+            <th>Ticker</th><th>Shares</th><th>Cost/sh</th><th>Cost total</th>
+            <th>Price</th><th>Mkt value</th><th>Unrealized P&amp;L</th><th>P&amp;L %</th><th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- INTERESTS -->
+    <section id="interests" class="tab">
+      <div class="grid-2">
+        <div>
+          <h3>Add a ticker</h3>
+          <form id="int-ticker-form" class="row-form">
+            <input name="value" placeholder="Ticker (e.g. NVDA)" required />
+            <button type="submit">Add ticker</button>
+          </form>
+          <h3>Add a theme / sector</h3>
+          <form id="int-theme-form" class="row-form">
+            <select name="value" id="theme-select"></select>
+            <button type="submit">Add theme</button>
+          </form>
+          <p class="hint">Themes are a curated shortcut to representative tickers — not an exhaustive or rebalanced index.</p>
+        </div>
+        <div>
+          <h3>Your interests</h3>
+          <div id="int-status" class="status"></div>
+          <ul id="int-list" class="chips"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="settings" class="tab">
+      <form id="settings-form">
+        <fieldset>
+          <legend>Trigger thresholds</legend>
+          <label>Daily move % <input type="number" step="any" name="daily_move_pct" /></label>
+          <label>RSI oversold <input type="number" step="any" name="rsi_oversold" /></label>
+          <label>RSI overbought <input type="number" step="any" name="rsi_overbought" /></label>
+          <label>MA short <input type="number" name="ma_short" /></label>
+          <label>MA long <input type="number" name="ma_long" /></label>
+        </fieldset>
+        <fieldset>
+          <legend>AI context (InvestorMate)</legend>
+          <label class="check"><input type="checkbox" name="ai_enabled" /> Enable AI context notes</label>
+          <label>Question <input type="text" name="ai_question" /></label>
+          <p id="ai-env" class="hint"></p>
+        </fieldset>
+        <fieldset>
+          <legend>Daily email</legend>
+          <label class="check"><input type="checkbox" name="always_send_summary" /> Always send a summary (even with no alerts)</label>
+          <label class="check"><input type="checkbox" name="schedule_enabled" /> Enable in-app daily scheduler (weekdays)</label>
+          <label>Hour (0-23) <input type="number" min="0" max="23" name="schedule_hour" /></label>
+          <label>Minute <input type="number" min="0" max="59" name="schedule_minute" /></label>
+          <p id="smtp-env" class="hint"></p>
+        </fieldset>
+        <div class="toolbar">
+          <button type="submit">Save settings</button>
+          <button type="button" id="btn-preview">Preview email</button>
+          <button type="button" id="btn-send">Send test email</button>
+          <button type="button" id="btn-export">Export to config.yaml</button>
+        </div>
+        <div id="settings-status" class="status"></div>
+      </form>
+      <div id="preview-pane"></div>
+    </section>
+  </main>
+
+  <footer id="disclaimer">
+    ⚠️ <strong>Informational / decision-support only.</strong> Signals and assessments describe current
+    technical conditions — they are <strong>not</strong> financial advice, not predictions, and not buy/sell
+    recommendations. This app <strong>never places trades</strong>. Always do your own research.
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

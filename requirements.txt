@@ -1,0 +1,14 @@
+yfinance>=0.2.36,<0.3
+pandas>=2.0.0
+PyYAML>=6.0
+pytest>=8.0.0
+
+# AI context notes via InvestorMate (requires OPENAI_API_KEY env var to run).
+# Pulls in openai + pins yfinance to the 0.2.x line, hence the cap above.
+investormate>=0.4.0
+
+# Web UI (FastAPI + vanilla-JS frontend) and in-app daily scheduler.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+apscheduler>=3.10
+httpx>=0.27,<0.28   # TestClient in starlette 0.36.x needs httpx <0.28

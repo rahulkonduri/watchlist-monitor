@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -305,6 +305,24 @@ def email_send(refresh: bool = Query(True)) -> Dict[str, Any]:
     return {"status": "sent (or printed to server stdout if SMTP not configured)"}
 
 
+# ── Scheduled job trigger (for GCP Cloud Scheduler) ──────────────────────────
+# On Cloud Run the in-app APScheduler cannot run reliably (instances scale to
+# zero between requests), so the daily report is driven by an external Cloud
+# Scheduler HTTP call hitting this endpoint. Protected by a shared secret.
+
+@app.post("/api/job/run-daily")
+def run_daily_job(x_job_token: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+    import os
+
+    expected = os.environ.get("JOB_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(503, "JOB_TOKEN is not configured on the server")
+    if x_job_token != expected:
+        raise HTTPException(401, "invalid or missing X-Job-Token header")
+    _run_daily_report()
+    return {"status": "daily report run", "as_of": datetime.now().isoformat(timespec="seconds")}
+
+
 # ── Ticker Inspector ─────────────────────────────────────────────────────────
 
 @app.get("/api/ticker/{symbol}")
@@ -389,6 +407,13 @@ def inspect_ticker(symbol: str, refresh: bool = Query(False)) -> Dict[str, Any]:
 def export_config() -> Dict[str, Any]:
     path = store.export_to_yaml()
     return {"path": path}
+
+
+# ── Health check ─────────────────────────────────────────────────────────────
+
+@app.get("/healthz")
+def healthz() -> Dict[str, Any]:
+    return {"status": "ok", "db": "postgres" if store.USE_PG else "sqlite"}
 
 
 # ── Static frontend ──────────────────────────────────────────────────────────

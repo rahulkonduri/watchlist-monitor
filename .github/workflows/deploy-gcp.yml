@@ -1,0 +1,44 @@
+name: Deploy to GCP Cloud Run
+
+# Builds the container and deploys the web UI to Cloud Run on every push to main.
+# Set up the secrets listed in docs/DEPLOY-GCP.md before enabling this.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  SERVICE: watchlist-monitor
+  REGION: ${{ secrets.GCP_REGION }}          # e.g. us-central1
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write          # for Workload Identity Federation (keyless auth)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          # Keyless auth (recommended). See docs/DEPLOY-GCP.md to set these up.
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and deploy
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --source . \
+            --allow-unauthenticated \
+            --add-cloudsql-instances "${{ secrets.CLOUD_SQL_CONNECTION_NAME }}" \
+            --set-secrets "DATABASE_URL=DATABASE_URL:latest,SMTP_HOST=SMTP_HOST:latest,SMTP_PORT=SMTP_PORT:latest,SMTP_USER=SMTP_USER:latest,SMTP_PASS=SMTP_PASS:latest,MAIL_TO=MAIL_TO:latest,JOB_TOKEN=JOB_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest" \
+            --memory 512Mi

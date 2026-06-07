@@ -1,0 +1,16 @@
+# Keep the image small and free of local-only / secret files
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+tests
+docs
+*.db
+.env
+.env.*
+*.md
+.gitignore
+.dockerignore

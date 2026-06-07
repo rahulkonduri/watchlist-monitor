@@ -1,7 +1,18 @@
-"""SQLite persistence for the web UI (stdlib sqlite3, no ORM).
+"""Persistence for the web UI — SQLite locally, PostgreSQL when hosted.
 
-Source of truth for the UI + in-app scheduler. A fresh connection is opened per
-operation so it is safe to call from FastAPI worker threads and APScheduler.
+Backend selection is automatic:
+  * If the ``DATABASE_URL`` env var is set (e.g. on GCP Cloud Run pointing at
+    Cloud SQL), PostgreSQL is used via psycopg2.
+  * Otherwise it falls back to a local SQLite file (``WATCHLIST_DB`` or
+    ``watchlist.db``).
+
+Cloud Run has an ephemeral filesystem, so SQLite there would lose data on every
+restart — that is why a managed Postgres is required for hosting. The SQL is kept
+deliberately simple and portable; the only per-backend differences (parameter
+placeholder, auto-increment, RETURNING) are handled by the thin helpers below.
+
+A fresh connection is opened per operation so it is safe to call from FastAPI
+worker threads and APScheduler.
 
 Tables:
   holdings(id, ticker, shares, cost_basis, purchased_on)
@@ -11,13 +22,21 @@ Tables:
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from .themes import expand_interests
 
 _DEFAULT_DB = Path(__file__).parent.parent / "watchlist.db"
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+
+_DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+USE_PG = bool(_DATABASE_URL)
+
+if USE_PG:  # imported lazily so local SQLite users need no psycopg2 installed
+    import psycopg2
+    import psycopg2.extras
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "triggers": {
@@ -40,35 +59,88 @@ def db_path() -> Path:
     return Path(os.environ.get("WATCHLIST_DB", str(_DEFAULT_DB)))
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path()))
-    conn.row_factory = sqlite3.Row
-    return conn
+# ── Backend-portable helpers ─────────────────────────────────────────────────
+
+def _q(sql: str) -> str:
+    """Translate the SQLite ``?`` placeholder to Postgres ``%s`` when needed."""
+    return sql.replace("?", "%s") if USE_PG else sql
+
+
+@contextmanager
+def _cursor() -> Iterator[Any]:
+    """Yield a cursor whose rows behave like dicts, committing/closing on exit."""
+    if USE_PG:
+        conn = psycopg2.connect(_DATABASE_URL)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    else:
+        conn = sqlite3.connect(str(db_path()))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+    try:
+        yield cur
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _insert(cur: Any, sql: str, params: tuple) -> int:
+    """Run an INSERT and return the new row id, portably."""
+    if USE_PG:
+        cur.execute(_q(sql) + " RETURNING id", params)
+        return int(cur.fetchone()["id"])
+    cur.execute(sql, params)
+    return int(cur.lastrowid)
 
 
 def init_db() -> None:
     """Create tables if missing, then seed from config.yaml on first run."""
-    with _connect() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS holdings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticker TEXT NOT NULL,
-                shares REAL NOT NULL,
-                cost_basis REAL NOT NULL,
-                purchased_on TEXT
-            );
-            CREATE TABLE IF NOT EXISTS interests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                kind TEXT NOT NULL,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            """
-        )
+    if USE_PG:
+        ddl = [
+            """CREATE TABLE IF NOT EXISTS holdings (
+                   id SERIAL PRIMARY KEY,
+                   ticker TEXT NOT NULL,
+                   shares DOUBLE PRECISION NOT NULL,
+                   cost_basis DOUBLE PRECISION NOT NULL,
+                   purchased_on TEXT
+               )""",
+            """CREATE TABLE IF NOT EXISTS interests (
+                   id SERIAL PRIMARY KEY,
+                   kind TEXT NOT NULL,
+                   value TEXT NOT NULL
+               )""",
+            """CREATE TABLE IF NOT EXISTS settings (
+                   key TEXT PRIMARY KEY,
+                   value TEXT NOT NULL
+               )""",
+        ]
+        with _cursor() as cur:
+            for stmt in ddl:
+                cur.execute(stmt)
+    else:
+        with _cursor() as cur:
+            cur.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS holdings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    shares REAL NOT NULL,
+                    cost_basis REAL NOT NULL,
+                    purchased_on TEXT
+                );
+                CREATE TABLE IF NOT EXISTS interests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """
+            )
     _seed_if_empty()
 
 
@@ -77,8 +149,9 @@ def init_db() -> None:
 def get_settings() -> Dict[str, Any]:
     """Return merged settings (defaults overlaid with stored values)."""
     merged = json.loads(json.dumps(DEFAULT_SETTINGS))  # deep copy
-    with _connect() as conn:
-        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    with _cursor() as cur:
+        cur.execute("SELECT key, value FROM settings")
+        rows = cur.fetchall()
     for row in rows:
         merged[row["key"]] = json.loads(row["value"])
     return merged
@@ -92,11 +165,13 @@ def update_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
             current[key].update(val)
         else:
             current[key] = val
-    with _connect() as conn:
+    with _cursor() as cur:
         for key, val in current.items():
-            conn.execute(
-                "INSERT INTO settings(key, value) VALUES(?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            cur.execute(
+                _q(
+                    "INSERT INTO settings(key, value) VALUES(?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+                ),
                 (key, json.dumps(val)),
             )
     return current
@@ -105,19 +180,21 @@ def update_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
 # ── Holdings ───────────────────────────────────────────────────────────────
 
 def list_holdings() -> List[Dict[str, Any]]:
-    with _connect() as conn:
-        rows = conn.execute("SELECT * FROM holdings ORDER BY ticker").fetchall()
+    with _cursor() as cur:
+        cur.execute("SELECT * FROM holdings ORDER BY ticker")
+        rows = cur.fetchall()
     return [dict(r) for r in rows]
 
 
 def add_holding(ticker: str, shares: float, cost_basis: float, purchased_on: Optional[str] = None) -> Dict[str, Any]:
-    with _connect() as conn:
-        cur = conn.execute(
+    with _cursor() as cur:
+        hid = _insert(
+            cur,
             "INSERT INTO holdings(ticker, shares, cost_basis, purchased_on) VALUES(?,?,?,?)",
             (ticker.strip().upper(), float(shares), float(cost_basis), purchased_on),
         )
-        hid = cur.lastrowid
-        row = conn.execute("SELECT * FROM holdings WHERE id=?", (hid,)).fetchone()
+        cur.execute(_q("SELECT * FROM holdings WHERE id=?"), (hid,))
+        row = cur.fetchone()
     return dict(row)
 
 
@@ -129,29 +206,32 @@ def update_holding(hid: int, **fields: Any) -> Optional[Dict[str, Any]]:
     if "ticker" in sets:
         sets["ticker"] = str(sets["ticker"]).strip().upper()
     assignments = ", ".join(f"{k}=?" for k in sets)
-    with _connect() as conn:
-        conn.execute(f"UPDATE holdings SET {assignments} WHERE id=?", (*sets.values(), hid))
-        row = conn.execute("SELECT * FROM holdings WHERE id=?", (hid,)).fetchone()
+    with _cursor() as cur:
+        cur.execute(_q(f"UPDATE holdings SET {assignments} WHERE id=?"), (*sets.values(), hid))
+        cur.execute(_q("SELECT * FROM holdings WHERE id=?"), (hid,))
+        row = cur.fetchone()
     return dict(row) if row else None
 
 
 def get_holding(hid: int) -> Optional[Dict[str, Any]]:
-    with _connect() as conn:
-        row = conn.execute("SELECT * FROM holdings WHERE id=?", (hid,)).fetchone()
+    with _cursor() as cur:
+        cur.execute(_q("SELECT * FROM holdings WHERE id=?"), (hid,))
+        row = cur.fetchone()
     return dict(row) if row else None
 
 
 def delete_holding(hid: int) -> bool:
-    with _connect() as conn:
-        cur = conn.execute("DELETE FROM holdings WHERE id=?", (hid,))
-    return cur.rowcount > 0
+    with _cursor() as cur:
+        cur.execute(_q("DELETE FROM holdings WHERE id=?"), (hid,))
+        return cur.rowcount > 0
 
 
 # ── Interests ──────────────────────────────────────────────────────────────
 
 def list_interests() -> List[Dict[str, Any]]:
-    with _connect() as conn:
-        rows = conn.execute("SELECT * FROM interests ORDER BY kind, value").fetchall()
+    with _cursor() as cur:
+        cur.execute("SELECT * FROM interests ORDER BY kind, value")
+        rows = cur.fetchall()
     return [dict(r) for r in rows]
 
 
@@ -162,22 +242,22 @@ def add_interest(kind: str, value: str) -> Dict[str, Any]:
         value = value.upper()
     else:
         value = value.lower()
-    with _connect() as conn:
+    with _cursor() as cur:
         # avoid duplicates
-        existing = conn.execute(
-            "SELECT * FROM interests WHERE kind=? AND value=?", (kind, value)
-        ).fetchone()
+        cur.execute(_q("SELECT * FROM interests WHERE kind=? AND value=?"), (kind, value))
+        existing = cur.fetchone()
         if existing:
             return dict(existing)
-        cur = conn.execute("INSERT INTO interests(kind, value) VALUES(?,?)", (kind, value))
-        row = conn.execute("SELECT * FROM interests WHERE id=?", (cur.lastrowid,)).fetchone()
+        iid = _insert(cur, "INSERT INTO interests(kind, value) VALUES(?,?)", (kind, value))
+        cur.execute(_q("SELECT * FROM interests WHERE id=?"), (iid,))
+        row = cur.fetchone()
     return dict(row)
 
 
 def delete_interest(iid: int) -> bool:
-    with _connect() as conn:
-        cur = conn.execute("DELETE FROM interests WHERE id=?", (iid,))
-    return cur.rowcount > 0
+    with _cursor() as cur:
+        cur.execute(_q("DELETE FROM interests WHERE id=?"), (iid,))
+        return cur.rowcount > 0
 
 
 # ── Derived config / tickers ─────────────────────────────────────────────────
@@ -209,9 +289,11 @@ def build_cfg() -> Dict[str, Any]:
 # ── Seed + export bridge to config.yaml ──────────────────────────────────────
 
 def _seed_if_empty() -> None:
-    with _connect() as conn:
-        n_int = conn.execute("SELECT COUNT(*) AS c FROM interests").fetchone()["c"]
-        n_set = conn.execute("SELECT COUNT(*) AS c FROM settings").fetchone()["c"]
+    with _cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS c FROM interests")
+        n_int = cur.fetchone()["c"]
+        cur.execute("SELECT COUNT(*) AS c FROM settings")
+        n_set = cur.fetchone()["c"]
     if n_int or n_set:
         return
     try:
